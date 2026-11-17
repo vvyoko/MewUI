@@ -857,6 +857,13 @@ public partial class Window : ContentControl, ILayoutRoundingHost
     /// <summary>Whether showing this window must leave the current activation where it is.</summary>
     internal bool ShowsWithoutActivation => IsNonActivatingSurface || !ShowActivated;
 
+    /// <summary>
+    /// Whether this window hosts its popups (menus, tooltips, drop-downs) in separate OS windows that
+    /// may extend beyond the client area. False draws them inside this window's own surface: the first
+    /// popup then costs no OS surface creation, at the price of clipping to the client area.
+    /// </summary>
+    public bool UseNativePopups { get; set; } = true;
+
     /// <summary>Whether this surface lets the mouse through to whatever is underneath.</summary>
     internal bool IsInputTransparentSurface { get; set; }
 
@@ -1590,6 +1597,23 @@ public partial class Window : ContentControl, ILayoutRoundingHost
         _backend.Hide();
         _lifetimeState = WindowLifetimeState.Hidden;
     }
+
+    /// <summary>
+    /// When <see langword="true"/>, <see cref="Show"/> creates the surface, lays out and paints the window
+    /// but leaves it off screen; the host reveals it later with <see cref="Reveal"/>.
+    /// </summary>
+    /// <remarks>
+    /// For players: mpv only shows its window after the first frame is configured, so the window's first
+    /// on-screen appearance already contains video. Set this before <see cref="Show"/> (e.g. in the
+    /// application startup callback) when the window must not appear as a black rectangle first.
+    /// </remarks>
+    public bool DeferReveal { get; set; }
+
+    /// <summary>
+    /// Reveals a window whose first presentation was deferred by <see cref="DeferReveal"/>.
+    /// No-op when the window was already revealed.
+    /// </summary>
+    public void Reveal() => _backend?.Reveal();
 
     // Async close state: result observed by CloseAsync, plus the deferral round flags.
     private TaskCompletionSource<bool>? _pendingCloseResult;
@@ -3425,6 +3449,11 @@ public partial class Window : ContentControl, ILayoutRoundingHost
             }
         }
 
+        // [Vivy] 上游声明了 FrameRendered 但从未触发（本快照里只有 FirstFrameRendered 被调用），
+        // 于是「每帧刷新状态 / 请求下一帧」没有任何落点。这里在 present 之后补一次。
+        // 修改记录见 docs/internal/mewui.md；升级快照时确认上游是否已自行补上，重复触发需删除。
+        FrameRendered?.Invoke();
+
         FrameRendered?.Invoke();
     }
 
@@ -3800,7 +3829,7 @@ public partial class Window : ContentControl, ILayoutRoundingHost
     internal Rect GetPopupPlacementRegion(Rect anchorBounds, UIElement? anchorElement = null)
     {
         var clientRegion = new Rect(0, 0, ClientSize.Width, ClientSize.Height);
-        if (!PopupManager.PreferNativePopups || _backend == null || Handle == 0 || !Application.IsRunning)
+        if (!PopupManager.PreferNativePopups || !UseNativePopups || _backend == null || Handle == 0 || !Application.IsRunning)
         {
             return clientRegion;
         }

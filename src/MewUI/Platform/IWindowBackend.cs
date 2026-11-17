@@ -37,6 +37,13 @@ public interface IWindowBackend : IDisposable
     void PresentSurface();
 
     /// <summary>
+    /// Reveals a window whose reveal was deferred by <c>Window.DeferReveal</c>.
+    /// The window was painted but kept off screen, so this is the first time it becomes visible.
+    /// No-op for backends that reveal synchronously in <see cref="PresentSurface"/>.
+    /// </summary>
+    void Reveal() { }
+
+    /// <summary>
     /// Hides the native window.
     /// </summary>
     void Hide();

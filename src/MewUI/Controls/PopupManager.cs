@@ -36,7 +36,7 @@ internal sealed class PopupManager
         _nativeHost = new NativePopupHost(window, _popups);
     }
 
-    private IPopupHost ResolveHost() => PreferNativePopups ? _nativeHost : _inSurfaceHost;
+    private IPopupHost ResolveHost() => PreferNativePopups && _window.UseNativePopups ? _nativeHost : _inSurfaceHost;
 
     internal int Count => _popups.Count;
 

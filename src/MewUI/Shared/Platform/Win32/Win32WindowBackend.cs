@@ -28,6 +28,8 @@ internal sealed class Win32WindowBackend : IWindowBackend
     private nint _hIconBig;
     private bool _initialEraseDone;
     private bool _presented;
+    private bool _revealPending;
+    private bool _revealRequested;
     private double _opacity = 1.0;
     private bool _allowsTransparency;
     private nint _dropTargetCom;
@@ -104,6 +106,8 @@ internal sealed class Win32WindowBackend : IWindowBackend
     {
         if (_presented)
         {
+            // A deferred reveal stays off screen until Window.Reveal: later presents only repaint.
+            if (_revealPending) return;
             User32.ShowWindow(Handle, Window.ShowsWithoutActivation ? ShowWindowCommands.SW_SHOWNA : ShowWindowCommands.SW_SHOW);
             return;
         }
@@ -118,23 +122,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             EnterFullScreen();
         }
 
-        int showCmd;
-        if (Window.IsNonActivatingSurface)
-        {
-            // Non-activating surfaces must not take activation away from the owner window.
-            showCmd = ShowWindowCommands.SW_SHOWNOACTIVATE;
-        }
-        else
-        {
-            bool activate = Window.ShowActivated;
-            showCmd = Window.WindowState switch
-            {
-                // Win32 has no command that maximizes without activating.
-                Controls.WindowState.Maximized => ShowWindowCommands.SW_SHOWMAXIMIZED,
-                Controls.WindowState.Minimized => activate ? ShowWindowCommands.SW_SHOWMINIMIZED : ShowWindowCommands.SW_SHOWMINNOACTIVE,
-                _ => activate ? ShowWindowCommands.SW_SHOW : ShowWindowCommands.SW_SHOWNOACTIVATE,
-            };
-        }
+        int showCmd = ShowCommand();
 
         // Maximize/minimize set the window geometry as part of the reveal, so painting beforehand would
         // paint at the wrong (restored) size. For those, reveal first then force a synchronous paint at
@@ -142,14 +130,84 @@ internal sealed class Win32WindowBackend : IWindowBackend
         // fully-laid-out content (including Loaded-time changes) with no flash.
         if (showCmd is ShowWindowCommands.SW_SHOWMAXIMIZED or ShowWindowCommands.SW_SHOWMINIMIZED or ShowWindowCommands.SW_SHOWMINNOACTIVE)
         {
+            // The host wants the window to appear already playing (mpv shows its window only after
+            // the first frame is configured): stay hidden and let Window.Reveal decide.
+            if (Window.DeferReveal)
+            {
+                DeferReveal(paint: false);
+                return;
+            }
+
             User32.ShowWindow(Handle, showCmd);
             User32.UpdateWindow(Handle);
         }
         else
         {
+            if (Window.DeferReveal)
+            {
+                DeferReveal(paint: true);
+                return;
+            }
+
             RenderNow();
             User32.ShowWindow(Handle, showCmd);
         }
+    }
+
+    // Leave the window hidden until Host-side Reveal. RenderNow runs host render callbacks synchronously,
+    // so the host may already ask for a reveal from inside that paint: mark pending before painting and
+    // consume the pending request afterwards, otherwise the request would be lost and the window would
+    // never appear.
+    private void DeferReveal(bool paint)
+    {
+        _revealPending = true;
+        if (paint)
+        {
+            RenderNow();
+        }
+
+        if (!_revealRequested) return;
+
+        _revealRequested = false;
+        RevealNow();
+    }
+
+    public void Reveal()
+    {
+        if (_presented && _revealPending)
+        {
+            RevealNow();
+            return;
+        }
+
+        // Called before the first presentation (the render loop paints before Show): show as soon as
+        // PresentSurface runs.
+        _revealRequested = true;
+    }
+
+    private void RevealNow()
+    {
+        _revealPending = false;
+        User32.ShowWindow(Handle, ShowCommand());
+        User32.UpdateWindow(Handle);
+    }
+
+    private int ShowCommand()
+    {
+        if (Window.IsNonActivatingSurface)
+        {
+            // Non-activating surfaces must not take activation away from the owner window.
+            return ShowWindowCommands.SW_SHOWNOACTIVATE;
+        }
+
+        bool activate = Window.ShowActivated;
+        return Window.WindowState switch
+        {
+            // Win32 has no command that maximizes without activating.
+            Controls.WindowState.Maximized => ShowWindowCommands.SW_SHOWMAXIMIZED,
+            Controls.WindowState.Minimized => activate ? ShowWindowCommands.SW_SHOWMINIMIZED : ShowWindowCommands.SW_SHOWMINNOACTIVE,
+            _ => activate ? ShowWindowCommands.SW_SHOW : ShowWindowCommands.SW_SHOWNOACTIVATE,
+        };
     }
 
     public void Hide()
@@ -740,9 +798,27 @@ internal sealed class Win32WindowBackend : IWindowBackend
         switch (msg)
         {
             case WindowMessages.WM_SETCURSOR:
+            {
+                int hitArea = (int)((long)lParam & 0xFFFF);
+
+                // NC resize band (HTLEFT..HTBOTTOMRIGHT = 10..17, contiguous): DefWindowProc only
+                // swaps in the sizing cursor for windows with WS_THICKFRAME — borderless windows are
+                // WS_POPUP, so the cursor has to be set here.
+                if (hitArea is >= 10 and <= 17)
+                {
+                    User32.SetCursor(LoadCursorHandle(hitArea switch
+                    {
+                        10 or 11 => CursorType.SizeWE,   // HTLEFT / HTRIGHT
+                        12 or 15 => CursorType.SizeNS,   // HTTOP / HTBOTTOM
+                        13 or 17 => CursorType.SizeNWSE, // HTTOPLEFT / HTBOTTOMRIGHT
+                        _ => CursorType.SizeNESW,        // HTTOPRIGHT / HTBOTTOMLEFT
+                    }));
+                    return 1;
+                }
+
                 // For a client-area hit, apply our cursor (or hide it) and return TRUE to prevent
                 // DefWindowProc from resetting it to the arrow on every move.
-                if ((lParam & 0xFFFF) == 1 /* HTCLIENT */)
+                if (hitArea == 1 /* HTCLIENT */)
                 {
                     if (_cursorHidden)
                     {
@@ -756,6 +832,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
                     }
                 }
                 return User32.DefWindowProc(Handle, msg, wParam, lParam);
+            }
 
             case WindowMessages.WM_NCHITTEST:
                 if (Window.IsInputTransparentSurface)
@@ -766,11 +843,32 @@ internal sealed class Win32WindowBackend : IWindowBackend
                 }
                 if (_allowsTransparency)
                 {
-                    return HandleNcHitTest(lParam);
+                    return HandleNcHitTest(lParam, 12);
                 }
                 if (_extendTitleBarHeight > 0)
                 {
                     return HandleExtendedTitleBarHitTest(lParam);
+                }
+                if (Window.Borderless)
+                {
+                    // WS_POPUP 没有 NC 边框，客户区铺满整个窗口：缩放带必须自己划出来，否则
+                    // 边缘那一圈全归客户区 —— 画在边上的控件（标题栏按钮 / 进度条）会先吃掉按下，
+                    // 而客户区另一套 resize 光标判定照旧生效，两边对不上。
+                    // 报成 NC 之后由系统接手：按下即进缩放循环，客户区根本收不到这次点击。
+                    return HandleNcHitTest(lParam, 6);
+                }
+                return User32.DefWindowProc(Handle, msg, wParam, lParam);
+
+            case WindowMessages.WM_NCMOUSEMOVE:
+                // Pointer is over a non-client area (borderless resize band / extended title bar): the
+                // client gets no more WM_MOUSEMOVE, so the hover chain must be dropped here — otherwise
+                // the last client-side position keeps being treated as "hovering" (control bar stays
+                // expanded while the pointer sits in the resize band). mpv behaves the same way: it
+                // handles only WM_MOUSEMOVE, NC moves never reach the input context (w32_common.c).
+                if (Window.MouseOverElement is not null)
+                {
+                    _isTrackingMouseLeave = false;
+                    WindowInputRouter.UpdateMouseOver(Window, null);
                 }
                 return User32.DefWindowProc(Handle, msg, wParam, lParam);
 
@@ -943,6 +1041,29 @@ internal sealed class Win32WindowBackend : IWindowBackend
 
             case WindowMessages.WM_MBUTTONUP:
                 return HandleMouseButton(lParam, MouseButton.Middle, isDown: false, isDoubleClickMessage: false);
+
+            case WindowMessages.WM_XBUTTONDOWN:
+            case WindowMessages.WM_XBUTTONUP:
+            case WindowMessages.WM_XBUTTONDBLCLK:
+                {
+                    // Win32 把哪颗侧键放在 HIWORD(wParam)：XBUTTON1=1、XBUTTON2=2。
+                    // 这里之前没有分支，XButton1/2 的消息直接落进 DefWindowProc，
+                    // 宿主收不到 MouseDown —— input.conf 的 MBTN_BACK/FORWARD 因此永远不触发。
+                    int which = (int)((wParam.ToInt64() >> 16) & 0xFFFF);
+                    var button = which switch
+                    {
+                        1 => MouseButton.XButton1,
+                        2 => MouseButton.XButton2,
+                        _ => (MouseButton?)null,
+                    };
+                    if (button is null) return 0;
+
+                    return HandleMouseButton(
+                        lParam,
+                        button.Value,
+                        isDown: msg != WindowMessages.WM_XBUTTONUP,
+                        isDoubleClickMessage: msg == WindowMessages.WM_XBUTTONDBLCLK);
+                }
 
             case WindowMessages.WM_MOUSEMOVE:
                 return HandleMouseMove(lParam);
@@ -2486,7 +2607,12 @@ internal sealed class Win32WindowBackend : IWindowBackend
         return 0;
     }
 
-    private nint HandleNcHitTest(nint lParam)
+    /// <summary>
+    /// 客户区四周的缩放带命中：返回 HTLEFT..HTBOTTOMRIGHT（不是缩放带则 HTCLIENT）。
+    /// <paramref name="gripDip"/> 是缩放带宽度（DIP）：透明窗口留的是阴影那一圈（12），
+    /// 无边框窗口是普通缩放带（6）。
+    /// </summary>
+    private nint HandleNcHitTest(nint lParam, int gripDip)
     {
         const int HTNOWHERE = 0;
         const int HTCLIENT = 1;
@@ -2520,11 +2646,12 @@ internal sealed class Win32WindowBackend : IWindowBackend
         if (pt.x < 0 || pt.y < 0 || pt.x >= w || pt.y >= h)
             return HTNOWHERE;
 
-        // Resize border detection for transparent windows (shadow area).
+        // Resize border detection: transparent windows use the shadow extent, borderless the normal grip.
         double dpiScale = GetDpiForWindow(Handle) / 96.0;
-        int grip = Math.Max(1, (int)(12 * dpiScale)); // shadow extent area
+        int grip = Math.Max(1, (int)(gripDip * dpiScale));
 
-        if (Window.WindowState != Controls.WindowState.Maximized && Window.WindowSize.IsResizable)
+        if (Window.WindowState is not (Controls.WindowState.Maximized or Controls.WindowState.FullScreen)
+            && Window.WindowSize.IsResizable)
         {
             bool left = pt.x < grip;
             bool right = pt.x >= w - grip;
@@ -3316,6 +3443,16 @@ internal sealed class Win32WindowBackend : IWindowBackend
 
         _cursorHidden = false;
 
+        _currentCursor = LoadCursorHandle(cursorType);
+        User32.SetCursor(_currentCursor);
+    }
+
+    /// <summary>
+    /// 装载系统光标句柄。不改 <c>_currentCursor</c>：NC 缩放带的光标只在这一次 WM_SETCURSOR 里用，
+    /// 记下来会污染客户区下一次的默认光标。
+    /// </summary>
+    private static nint LoadCursorHandle(CursorType cursorType)
+    {
         nint id = cursorType switch
         {
             CursorType.Arrow => SystemCursors.IDC_ARROW,
@@ -3334,8 +3471,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             _ => SystemCursors.IDC_ARROW,
         };
 
-        _currentCursor = User32.LoadCursor(0, id);
-        User32.SetCursor(_currentCursor);
+        return User32.LoadCursor(0, id);
     }
 
     public void SetImeMode(ImeMode mode)
