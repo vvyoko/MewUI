@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    MewUI 侧 props：屏蔽 Vivy 仓库根的 Directory.Build.props
+    （本目录是上游 clone 的 vivy 分支，见 VIVY-README.md）。
+
+    根 props 会把 TargetFramework 默认成 net11.0-windows；MewUI 三工程用
+    MewUI.Common.props 声明 TargetFrameworks=net8.0;net10.0（复数）。根的单例
+    TargetFramework 一旦先落地，就会和 TargetFrameworks 打架，工程直接还原失败。
+    MSBuild 只取最近的一份 Directory.Build.props，本文件存在即根部不再生效。
+    这里刻意不设 TargetFramework / TargetFrameworks，交给各工程自己声明。
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+</Project>
