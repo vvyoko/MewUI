@@ -1,33 +1,48 @@
-# MewUI（上游 clone · Vivy 侧说明）
+# MewUI（Vivy fork · 维护说明）
 
 
 `src/Vivy` 的 UI 自管理链路使用 MewUI（Win32 平台 + Direct2D 后端）作为窗口、消息泵、
-控件树、渲染节拍的宿主框架。这里是 **aprillz/MewUI 的完整 clone**，不是快照——
-上游仍在活跃更新，Vivy 的改动以分支形式叠在上游之上，随时可以拉取上游并同步。
+控件树、渲染节拍的宿主框架。这里是 **aprillz/MewUI 的 fork**，Vivy 的改动以 `vivy` 分支
+叠在上游之上——上游仍在活跃更新，改动要能随时 rebase 回上游。
 
 ## 仓库形态
 
 | 项 | 值 |
 |---|---|
-| 上游 | <https://github.com/aprillz/MewUI>（`origin`） |
+| 上游 | <https://github.com/aprillz/MewUI>（`upstream`） |
+| Vivy fork | <https://github.com/vvyoko/MewUI>（`origin`） |
+| **Vivy 分支** | `vivy`（`origin/vivy`，所有本地补丁都在这里） |
+| `main` | 只跟踪 `upstream/main`，永远不提交本地改动 |
 | 基线 commit | `553f28d96df9bb1df7bc69bba2990dade71b760e` |
 | 上游版本（`build/MewUI.Common.props`） | `0.22.1` |
-| **Vivy 分支** | `vivy`（所有本地补丁都在这里） |
-| `main` | 只跟踪 `origin/main`，永远不提交本地改动 |
 
 - 本目录被 Vivy 仓库的 `.gitignore` 忽略：它有自己的 `.git`，但**不是 submodule**，
   不会把两套历史缠在一起。`src/Vivy/Vivy.csproj` 直接 `ProjectReference` 这里的三个工程，
   所以路径必须保持 `Libraries/MewUI/`。
-- 上游的全部工程（GDI / MewVG / Browser / X11 / MacOS / Headless / Preview 等）都在，
+- 上游全部工程都在（GDI / MewVG / Browser / X11 / MacOS / Headless / Preview 等），
   Vivy 只引用 `MewUI`、`MewUI.Platform.Win32`、`MewUI.Backend.Direct2D` 三个，其余不参与编译。
+- 上游是 MIT，fork 与再分发没问题；`LICENSE` 保持原样。
+
+## 换一台机器：还原
+
+```powershell
+cd Vivy/Libraries
+git clone --branch vivy https://github.com/vvyoko/MewUI.git MewUI
+cd MewUI
+git remote add upstream https://github.com/aprillz/MewUI.git
+```
+
+`vivy` 上的提交就是全部补丁，代码逐字一致，没有需要手工重放的东西。
+补丁的**意图**与「上游若已自行实现就删掉这段」的判断看 `docs/internal/mewui.md` 的表格。
 
 ## 拉上游并同步补丁（升级流程）
 
 ```powershell
 cd Libraries/MewUI
-git fetch origin
-git switch main && git merge --ff-only origin/main   # main 永远与上游一致
-git switch vivy && git rebase main                   # 冲突只可能在下面列出的补丁文件里
+git fetch upstream
+git switch main && git merge --ff-only upstream/main   # main 永远与上游一致
+git switch vivy && git rebase upstream/main            # 冲突只可能在补丁文件里
+git push --force-with-lease origin vivy                # rebase 改写了历史，只能强推自己的分支
 cd ../..; dotnet test src/Vivy.Tests/Vivy.Tests.csproj
 dotnet build src/Vivy/Vivy.csproj -c Release
 ```
@@ -37,6 +52,7 @@ dotnet build src/Vivy/Vivy.csproj -c Release
 - rebase 完成后回填上表的基线 commit / 版本号，并在 `docs/internal/mewui.md` 追加一条升级记录。
 - `dotnet test` + Release 构建（以及发版前的 AOT publish）是升级的验收条件：
   MewUI 的窗口 / 渲染 / 输入是宿主整条链路的底座。
+- `--force-with-lease` 只对 `origin/vivy` 用：那是 Vivy 自己的分支，改写历史是常态。
 
 ## vivy 分支上的提交
 
