@@ -326,7 +326,8 @@ public abstract partial class TextBlockBase : TextElement, IDisposable
 
         using (DevToolsGate.IsSupported ? ProfilerMarkers.TextDraw.Auto() : default)
         {
-            var options = new TextDrawOptions(Foreground, spans, Owner: this);
+            var options = new TextDrawOptions(Foreground, spans, Owner: this,
+                Stroke: Stroke, Shadow: Shadow);
             var origin = new Point(bounds.X - alignmentOffset, y);
             // The engine draws from an origin with no extent of its own, so text longer than the
             // arranged box would paint over whatever sits next to it.

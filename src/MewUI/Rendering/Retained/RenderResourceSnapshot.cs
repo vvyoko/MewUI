@@ -94,7 +94,9 @@ internal static class RenderResourceSnapshot
             options.PaintSpans.IsEmpty ? default : options.PaintSpans.ToArray(),
             options.Overlays.IsEmpty ? default : options.Overlays.ToArray(),
             options.Owner,
-            options.Transient);
+            options.Transient,
+            options.Stroke,
+            options.Shadow);
 
     /// <summary>
     /// Produces the pen or brush the replay must use, taking an image lease when the paint samples

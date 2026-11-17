@@ -1,3 +1,5 @@
+using Aprillz.MewUI.Text;
+
 namespace Aprillz.MewUI.Controls;
 
 /// <summary>
@@ -31,6 +33,16 @@ public abstract class TextElement : FrameworkElement
     public static readonly MewProperty<FontStyle> FontStyleProperty =
         MewProperty<FontStyle>.Register<TextElement>(nameof(FontStyle), FontStyle.Normal,
             MewPropertyOptions.AffectsLayout | MewPropertyOptions.Inherits);
+
+    /// <summary>Outline expanded around every glyph; null disables it. Inherited by descendants.</summary>
+    public static readonly MewProperty<TextStroke?> StrokeProperty =
+        MewProperty<TextStroke?>.Register<TextElement>(nameof(Stroke), null,
+            MewPropertyOptions.AffectsRender | MewPropertyOptions.Inherits);
+
+    /// <summary>Glyph-shaped drop shadow; null disables it. Inherited by descendants.</summary>
+    public static readonly MewProperty<TextShadow?> ShadowProperty =
+        MewProperty<TextShadow?>.Register<TextElement>(nameof(Shadow), null,
+            MewPropertyOptions.AffectsRender | MewPropertyOptions.Inherits);
 
     #endregion
 
@@ -85,5 +97,22 @@ public abstract class TextElement : FrameworkElement
     {
         get => GetValue(FontStyleProperty);
         set => SetValue(FontStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the glyph outline expansion. The outline follows the real glyph contour, so
+    /// counters and joins stay correct; it is not a translated copy of the glyph.
+    /// </summary>
+    public TextStroke? Stroke
+    {
+        get => GetValue(StrokeProperty);
+        set => SetValue(StrokeProperty, value);
+    }
+
+    /// <summary>Gets or sets the glyph-shaped drop shadow drawn behind the glyph and its stroke.</summary>
+    public TextShadow? Shadow
+    {
+        get => GetValue(ShadowProperty);
+        set => SetValue(ShadowProperty, value);
     }
 }

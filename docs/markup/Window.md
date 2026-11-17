@@ -16,6 +16,7 @@ Receiver: `Window` and derived types (`where T : Window`).
 | `CanMaximize(bool value = true)` | `CanMaximize` | Sets whether the maximize button is enabled; the default is true. |
 | `CanMinimize(bool value = true)` | `CanMinimize` | Sets whether the minimize button is enabled; the default is true. |
 | `CreateBusyIndicator(string message = null, bool cancellable = false)` |  | Creates and shows a busy indicator overlay. Dispose the returned IBusyIndicator to dismiss. While active, window content is disabled and closing is prevented. |
+| `DeferReveal(bool value = true)` | `DeferReveal` | Sets DeferReveal. When , Show creates the surface, lays out and paints the window but leaves it off screen; the host reveals it later with Reveal. |
 | `ExtendClientAreaTitleBarHeight(double value)` | `ExtendClientAreaTitleBarHeight` | Sets the height in DIPs of the custom title bar area; a value above 0 extends the client area into the title bar while keeping the native frame, and 0 restores the default title bar. |
 | `FitContentHeight(double fixedWidth, double maxHeight = 1000)` |  | Sets the window to fit content height. |
 | `FitContentSize(double maxWidth = 1000, double maxHeight = 1000)` |  | Sets the window to fit content size. |
@@ -55,4 +56,5 @@ Receiver: `Window` and derived types (`where T : Window`).
 | `Title(string value)` | `Title` | Sets the window title. |
 | `Topmost(bool value = true)` | `Topmost` | Sets whether the window stays on top of other windows. |
 | `UseLayoutRounding(bool value = true)` | `UseLayoutRounding` | Sets whether layout rounding is enabled. |
+| `UseNativePopups(bool value = true)` | `UseNativePopups` | Sets UseNativePopups. Whether this window hosts its popups (menus, tooltips, drop-downs) in separate OS windows that may extend beyond the client area. False draws them inside this window's own surface: the first popup then costs no OS surface creation, at the price of clipping to the client area. |
 | `WindowState(WindowState value)` | `WindowState` | Sets the window display state. |

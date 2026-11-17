@@ -92,7 +92,9 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
         => layout.IsFastPath &&
            !layout.HasMaterializedColumns &&
            options.PaintSpans.IsEmpty &&
-           options.Overlays.IsEmpty;
+           options.Overlays.IsEmpty &&
+           options.Stroke is null &&
+           options.Shadow is null;
 
     private void DrawBackgroundCore(ManagedTextLayout managed, Point origin, in TextDrawOptions options)
     {
@@ -394,20 +396,29 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
     {
         var spans = options.PaintSpans.Span;
         ref readonly var run = ref managed.GetRun(runIndex);
-        // Colour is resolved at each text element's first code unit, so a span that starts inside one
-        // colours the whole element rather than cutting the glyph in half.
+
+        // A segment splits on any paint change, not just colour: a span that changes the outline
+        // mid-run has to end the previous segment or the old stroke would paint the new glyphs.
+        // Boundaries are text elements, so splitting there never cuts a glyph in half.
         var boundaries = managed.GetRunBoundaries(runIndex);
+        int first = boundaries.Length > 0 ? boundaries[0] : run.TextStart;
         int segmentStart = 0;
-        var segmentColor = GetSpanForeground(spans, boundaries.Length > 0 ? boundaries[0] : run.TextStart)
-            ?? options.Foreground;
+        Color segmentColor = GetSpanForeground(spans, first) ?? options.Foreground;
+        TextStroke? segmentStroke = GetSpanStroke(spans, first) ?? options.Stroke;
+        TextShadow? segmentShadow = GetSpanShadow(spans, first) ?? options.Shadow;
 
         for (int index = 1; index <= boundaries.Length; index++)
         {
             Color nextColor = default;
+            TextStroke? nextStroke = null;
+            TextShadow? nextShadow = null;
             if (index < boundaries.Length)
             {
-                nextColor = GetSpanForeground(spans, boundaries[index]) ?? options.Foreground;
-                if (nextColor == segmentColor)
+                int at = boundaries[index];
+                nextColor = GetSpanForeground(spans, at) ?? options.Foreground;
+                nextStroke = GetSpanStroke(spans, at) ?? options.Stroke;
+                nextShadow = GetSpanShadow(spans, at) ?? options.Shadow;
+                if (nextColor == segmentColor && nextStroke == segmentStroke && nextShadow == segmentShadow)
                 {
                     continue;
                 }
@@ -417,17 +428,17 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
             int endOffset = index < boundaries.Length ? boundaries[index] : run.TextEnd;
             double left = origin.X + managed.GetColumnX(in run, startOffset);
             double right = origin.X + managed.GetColumnX(in run, endOffset);
-            if (segmentStart == 0 && index == boundaries.Length)
+            bool wholeRun = segmentStart == 0 && index == boundaries.Length;
+
+            if (wholeRun)
             {
-                DrawRun(realized, runBounds.Position, segmentColor, EffectiveOwner(in options));
+                DrawSegment(managed, in run, runBounds, baseline, realized, startOffset, endOffset,
+                    segmentColor, segmentStroke, segmentShadow, clip: null, in options);
             }
             else
             {
-                // Interior color boundaries floor to whole device pixels so adjacent clips agree
-                // on pixel ownership; backend clip rounding otherwise shifts the boundary column
-                // into the neighbor color depending on the fractional scroll offset.
-                // The outer edges follow the glyph ink instead of the run box, so a colour split keeps
-                // the same overhang an unsplit run draws.
+                // Interior boundaries floor to whole device pixels so adjacent segments agree on
+                // pixel ownership; outer edges follow the glyph ink to keep the overhang.
                 double dpiScale = _context.DpiScale;
                 double antialiasMargin = 1 / dpiScale;
                 var ink = realized.Run.Ink;
@@ -442,22 +453,157 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
                 var clip = new Rect(clipLeft, clipTop, Math.Max(0, clipRight - clipLeft), Math.Max(0, clipBottom - clipTop));
                 if (!clip.IsEmpty)
                 {
-                    _context.Save();
-                    try
-                    {
-                        _context.IntersectClip(clip);
-                        DrawRun(realized, runBounds.Position, segmentColor, EffectiveOwner(in options));
-                    }
-                    finally
-                    {
-                        _context.Restore();
-                    }
+                    DrawSegment(managed, in run, runBounds, baseline, realized, startOffset, endOffset,
+                        segmentColor, segmentStroke, segmentShadow, clip, in options);
                 }
             }
             DrawRunDecoration(managed.Snapshot.GetStyle(startOffset), left, right, runBounds, baseline, segmentColor);
 
             segmentStart = index;
             segmentColor = nextColor;
+            segmentStroke = nextStroke;
+            segmentShadow = nextShadow;
+        }
+    }
+
+    /// <summary>
+    /// One uniform segment: optional effects under the same clip as the glyph, so a partial stroke
+    /// cannot bleed its outline onto the neighbouring segment's glyphs.
+    /// </summary>
+    private void DrawSegment(
+        ManagedTextLayout managed,
+        in ManagedTextRun run,
+        Rect runBounds,
+        double baseline,
+        RealizedRun realized,
+        int startOffset,
+        int endOffset,
+        Color color,
+        TextStroke? stroke,
+        TextShadow? shadow,
+        Rect? clip,
+        in TextDrawOptions options)
+    {
+        if (clip is Rect bounds)
+        {
+            _context.Save();
+            try
+            {
+                _context.IntersectClip(bounds);
+                DrawSegmentPaint(managed, in run, runBounds, baseline, realized,
+                    startOffset, endOffset, color, stroke, shadow, in options);
+            }
+            finally
+            {
+                _context.Restore();
+            }
+        }
+        else
+        {
+            DrawSegmentPaint(managed, in run, runBounds, baseline, realized,
+                startOffset, endOffset, color, stroke, shadow, in options);
+        }
+    }
+
+    private void DrawSegmentPaint(
+        ManagedTextLayout managed,
+        in ManagedTextRun run,
+        Rect runBounds,
+        double baseline,
+        RealizedRun realized,
+        int startOffset,
+        int endOffset,
+        Color color,
+        TextStroke? stroke,
+        TextShadow? shadow,
+        in TextDrawOptions options)
+    {
+        if (stroke is not null || shadow is not null)
+        {
+            DrawGlyphEffects(managed, in run, runBounds, baseline, realized,
+                startOffset, endOffset, stroke, shadow);
+        }
+        DrawRun(realized, runBounds.Position, color, EffectiveOwner(in options));
+    }
+
+    /// <summary>
+    /// Draws a stroke and/or shadow from the real glyph outline: each character's contour is appended
+    /// into one path in run-local coordinates, then filled for the shadow and stroked for the outline.
+    /// The cached path is reused by every redraw of the run — only the paint changes per frame.
+    /// </summary>
+    private void DrawGlyphEffects(
+        ManagedTextLayout managed,
+        in ManagedTextRun run,
+        Rect runBounds,
+        double baseline,
+        RealizedRun realized,
+        int startOffset,
+        int endOffset,
+        TextStroke? stroke,
+        TextShadow? shadow)
+    {
+        var outline = realized.GetOrCreateOutline(managed, in run, baseline, startOffset, endOffset);
+        if (outline is null || outline.IsEmpty)
+        {
+            return;
+        }
+
+        var origin = runBounds.Position;
+        if (shadow is TextShadow s && s.Color.A > 0)
+        {
+            var radius = Math.Max(0, s.BlurRadius);
+            if (radius < 0.01)
+            {
+                WithOffset(origin, s.OffsetX, s.OffsetY, () => _context.FillPath(outline, s.Color));
+            }
+            else
+            {
+                DrawBlurredShadow(outline, origin, s, radius);
+            }
+        }
+
+        if (stroke is TextStroke t && t.Color.A > 0 && t.Width > 0)
+        {
+            WithOffset(origin, 0, 0, () => _context.DrawPath(outline, t.Color, t.Width * 2));
+        }
+    }
+
+    /// <summary>
+    /// Gaussian-ish shadow by weighted multiple fills of the same outline. Real blur would need an
+    /// offscreen pass, which cannot be expressed in a retained recording; a small fixed kernel keeps
+    /// the shadow glyph-shaped at every backend and costs only a few extra path fills.
+    /// </summary>
+    private void DrawBlurredShadow(PathGeometry outline, Point origin, TextShadow shadow, double radius)
+    {
+        (double DX, double DY, double Weight)[] kernel =
+        [
+            (0, 0, 0.25),
+            (-1, 0, 0.125), (1, 0, 0.125), (0, -1, 0.125), (0, 1, 0.125),
+            (-1, -1, 0.0625), (1, -1, 0.0625), (-1, 1, 0.0625), (1, 1, 0.0625),
+        ];
+        foreach (var (dx, dy, weight) in kernel)
+        {
+            Color color = Color.FromArgb(
+                (byte)Math.Round(shadow.Color.A * weight),
+                shadow.Color.R, shadow.Color.G, shadow.Color.B);
+            WithOffset(origin,
+                shadow.OffsetX + dx * radius,
+                shadow.OffsetY + dy * radius,
+                () => _context.FillPath(outline, color));
+        }
+    }
+
+    private void WithOffset(Point origin, double dx, double dy, Action draw)
+    {
+        _context.Save();
+        try
+        {
+            _context.Translate(origin.X + dx, origin.Y + dy);
+            draw();
+        }
+        finally
+        {
+            _context.Restore();
         }
     }
 
@@ -470,6 +616,34 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
             if (span.Foreground is Color color && index >= span.Range.Start && index < span.Range.End)
             {
                 result = color;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Resolves the per-range stroke override; later spans win where ranges overlap.</summary>
+    internal static TextStroke? GetSpanStroke(ReadOnlySpan<TextPaintSpan> spans, int index)
+    {
+        TextStroke? result = null;
+        foreach (var span in spans)
+        {
+            if (span.Stroke is TextStroke value && index >= span.Range.Start && index < span.Range.End)
+            {
+                result = value;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Resolves the per-range shadow override; later spans win where ranges overlap.</summary>
+    internal static TextShadow? GetSpanShadow(ReadOnlySpan<TextPaintSpan> spans, int index)
+    {
+        TextShadow? result = null;
+        foreach (var span in spans)
+        {
+            if (span.Shadow is TextShadow value && index >= span.Range.Start && index < span.Range.End)
+            {
+                result = value;
             }
         }
         return result;
@@ -546,8 +720,57 @@ internal sealed class ManagedTextRenderContext : ITextRenderContext, IDisposable
 
     private sealed class RealizedRun(ITextBackendRun run) : IDisposable
     {
+        // One entry per drawn range: a paint span can change the stroke mid-run, so contours are
+        // cached by the character range they cover instead of once for the whole run.
+        private readonly Dictionary<(int Start, int End), PathGeometry?> _outlines = [];
+
         public ITextBackendRun Run { get; } = run;
 
-        public void Dispose() => Run.Dispose();
+        /// <summary>
+        /// Glyph contours in run-local coordinates for <paramref name="start"/>..<paramref name="end"/>,
+        /// built once per range and shared by every redraw. A font without glyph outlines leaves it null.
+        /// </summary>
+        public PathGeometry? GetOrCreateOutline(
+            ManagedTextLayout layout,
+            in ManagedTextRun run,
+            double baseline,
+            int start,
+            int end)
+        {
+            var key = (start, end);
+            if (_outlines.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            PathGeometry? result = null;
+            if (run.Font is IGlyphOutlineFont outlineFont && run.Kind == ManagedTextRunKind.Text)
+            {
+                var path = new PathGeometry();
+                string text = layout.Snapshot.Text;
+                for (int index = start; index < end; index++)
+                {
+                    char ch = text[index];
+                    if (ch is '\r' or '\n' or '\t')
+                    {
+                        continue;
+                    }
+                    double x = layout.GetColumnX(in run, index) - run.X;
+                    outlineFont.TryAppendGlyphOutline(path, ch, new Point(x, baseline), out _);
+                }
+                if (!path.IsEmpty)
+                {
+                    result = path;
+                }
+            }
+
+            _outlines[key] = result;
+            return result;
+        }
+
+        public void Dispose()
+        {
+            Run.Dispose();
+        }
     }
 }

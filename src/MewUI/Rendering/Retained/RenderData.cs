@@ -220,6 +220,8 @@ internal sealed class RenderData : IDisposable
     private static bool HoldSameTextOptions(in TextDrawOptions first, in TextDrawOptions second)
         => first.Foreground == second.Foreground &&
             first.Transient == second.Transient &&
+            first.Stroke == second.Stroke &&
+            first.Shadow == second.Shadow &&
             Equals(first.Owner, second.Owner) &&
             first.PaintSpans.Span.SequenceEqual(second.PaintSpans.Span) &&
             first.Overlays.Span.SequenceEqual(second.Overlays.Span);

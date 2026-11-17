@@ -185,13 +185,38 @@ public interface ITextEngine
     ITextLayoutCache ManagedCache { get; }
 }
 
+/// <param name="Range">Text range the overrides apply to.</param>
+/// <param name="Foreground">Foreground override for the range.</param>
+/// <param name="Background">Background fill override for the range.</param>
+/// <param name="Decoration">Underline / strikethrough flags for the range.</param>
+/// <param name="Stroke">Per-range glyph outline override; falls back to the block-level stroke when null.</param>
+/// <param name="Shadow">Per-range glyph shadow override; falls back to the block-level shadow when null.</param>
 public readonly record struct TextPaintSpan(
     TextRange Range,
     Color? Foreground = null,
     Color? Background = null,
-    TextDecoration Decoration = TextDecoration.None);
+    TextDecoration Decoration = TextDecoration.None,
+    TextStroke? Stroke = null,
+    TextShadow? Shadow = null);
 
 public readonly record struct TextOverlay(TextRange Range, Color Color);
+
+/// <summary>
+/// Outline stroked around every glyph. Width is the outward expansion in DIPs; zero width with
+/// a color disables it. Drawn from the real glyph outline, not a translated copy of the glyph.
+/// </summary>
+/// <param name="Color">Color of the expanded outline.</param>
+/// <param name="Width">Outward size in DIPs.</param>
+public readonly record struct TextStroke(Color Color, double Width);
+
+/// <summary>
+/// Glyph-shaped drop shadow drawn from the same outline as the text, in DIPs.
+/// </summary>
+/// <param name="Color">Shadow color, including alpha.</param>
+/// <param name="OffsetX">Horizontal shift.</param>
+/// <param name="OffsetY">Vertical shift.</param>
+/// <param name="BlurRadius">Gaussian radius; zero keeps a hard ASS-style shadow.</param>
+public readonly record struct TextShadow(Color Color, double OffsetX, double OffsetY, double BlurRadius = 0);
 
 /// <param name="Foreground">Base glyph color for ranges no paint span overrides.</param>
 /// <param name="PaintSpans">Per-range foreground/background/decoration overrides.</param>
@@ -201,12 +226,16 @@ public readonly record struct TextOverlay(TextRange Range, Color Color);
 /// The text changes every frame: nothing drawn for it is kept in the run or backend text caches,
 /// and the backend reuses per-frame scratch textures instead of filling its cache with one-off entries.
 /// </param>
+/// <param name="Stroke">Optional glyph outline expansion, drawn behind the glyphs.</param>
+/// <param name="Shadow">Optional glyph-shaped drop shadow, drawn behind the stroke.</param>
 public readonly record struct TextDrawOptions(
     Color Foreground,
     ReadOnlyMemory<TextPaintSpan> PaintSpans = default,
     ReadOnlyMemory<TextOverlay> Overlays = default,
     object? Owner = null,
-    bool Transient = false);
+    bool Transient = false,
+    TextStroke? Stroke = null,
+    TextShadow? Shadow = null);
 
 public interface ITextRenderContext
 {

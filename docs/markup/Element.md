@@ -119,6 +119,8 @@ Receiver: `TextElement` and derived types (`where T : TextElement`).
 | `FontStyle(FontStyle value)` | `FontStyle` | Sets the font style, which selects the family's italic face. |
 | `FontWeight(FontWeight value)` | `FontWeight` | Sets the font weight. |
 | `Foreground(Color value)` | `Foreground` | Sets the foreground (text) color. |
+| `Shadow(TextShadow? value)` | `Shadow` | Sets the glyph-shaped drop shadow drawn behind the glyph and its stroke. |
+| `Stroke(TextStroke? value)` | `Stroke` | Sets the glyph outline expansion. The outline follows the real glyph contour, so counters and joins stay correct; it is not a translated copy of the glyph. |
 
 ### Track
 

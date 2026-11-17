@@ -3449,10 +3449,8 @@ public partial class Window : ContentControl, ILayoutRoundingHost
             }
         }
 
-        // [Vivy] 上游声明了 FrameRendered 但从未触发（本快照里只有 FirstFrameRendered 被调用），
-        // 于是「每帧刷新状态 / 请求下一帧」没有任何落点。这里在 present 之后补一次。
-        // 修改记录见 docs/internal/mewui.md；升级快照时确认上游是否已自行补上，重复触发需删除。
-        FrameRendered?.Invoke();
+        // 上游在 present 之后触发 FrameRendered（本方法末尾那一行）；早先 Vivy 补丁误以为
+        // 上游没触发又补了一次，导致每帧两遍、UI 帧率读数翻倍。补丁已撤销，记录见 mewui.md。
 
         FrameRendered?.Invoke();
     }
