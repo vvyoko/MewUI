@@ -1123,6 +1123,10 @@ public sealed unsafe partial class Direct2DGraphicsFactory : IGraphicsFactory, I
                 }
 
                 _ = Dxgi.MakeWindowAssociation(dxgiFactory, hwnd, Dxgi.DXGI_MWA_NO_ALT_ENTER);
+
+                // 外部工具（RTSS 之类）只认 IDXGISwapChain::Present；这条日志用来确认窗口到底
+                // 走的是 swapchain 还是 D2D 的 HwndRenderTarget（后者不调 Present）。
+                DiagLog.Write($"[D2D] swapchain target hwnd=0x{hwnd:X} {width}x{height} mode={mode}");
             }
 
             hr = Dxgi.GetBuffer(swapChain, 0, D2D1.IID_IDXGISurface, out dxgiSurface);
