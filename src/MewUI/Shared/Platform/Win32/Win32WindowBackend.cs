@@ -487,6 +487,15 @@ internal sealed class Win32WindowBackend : IWindowBackend
 
     private double _extendTitleBarHeight;
 
+    // True when the client area is meant to fill the whole window with no native non-client
+    // frame: per-pixel transparency, an extended custom title bar, or a borderless window.
+    // Such windows must skip AdjustWindowRect and drop the NC deflate in WM_NCCALCSIZE —
+    // mpv's w32_common.c does the same (adjust_window_rect early-outs when !border).
+    // Needed for borderless even when opaque: GetWindowStyle adds WS_THICKFRAME there (for
+    // the taskbar/system size loop), which DefWindowProc would otherwise turn into a visible
+    // resize border and inflate every client→window size computation.
+    private bool HasCustomClient => _allowsTransparency || _extendTitleBarHeight > 0 || Window.Borderless;
+
     public void SetExtendClientAreaToTitleBar(double titleBarHeight)
     {
         _extendTitleBarHeight = titleBarHeight;
@@ -673,7 +682,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
         int clientH = (int)Math.Round(heightDip * dpiScale);
 
         int windowW, windowH;
-        if (_allowsTransparency || _extendTitleBarHeight > 0)
+        if (HasCustomClient)
         {
             // WM_NCCALCSIZE removes non-client area → client = window.
             windowW = clientW;
@@ -974,6 +983,18 @@ internal sealed class Win32WindowBackend : IWindowBackend
             case WindowMessages.WM_ACTIVATE:
                 return HandleActivate(wParam);
 
+            case WindowMessages.WM_NCACTIVATE:
+                // Suppress the native non-client redraw on activation loss/gain. A borderless window
+                // still carries WS_THICKFRAME (for the system size loop), so DefWindowProc otherwise
+                // repaints the resize border on activation — a hollow rectangle flashing in and out
+                // when switching from another window. lParam = -1 means "no NC region to redraw".
+                // mpv w32_common.c WM_NCACTIVATE does the same for borderless windows.
+                if (HasCustomClient)
+                {
+                    lParam = -1;
+                }
+                return User32.DefWindowProc(Handle, msg, wParam, lParam);
+
             case WindowMessages.WM_MOUSEACTIVATE:
                 // Non-activating surfaces: clicking their content must not steal foreground from the
                 // owner window (that would break light-dismiss and leave the owner looking inactive).
@@ -1163,7 +1184,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
         var rect = new RECT(0, 0, (int)(Window.Width * dpiScale), (int)(Window.Height * dpiScale));
         uint style = GetWindowStyle();
         uint exStyle = GetWindowExStyle();
-        if (!Window.AllowsTransparency)
+        if (!HasCustomClient)
         {
             Win32DpiApiResolver.AdjustWindowRectExForDpi(ref rect, style, false, exStyle, initialDpi);
         }
@@ -1208,7 +1229,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             Window.SetDpi(actualDpi);
             SetClientSize(Window.Width, Window.Height);
             var updatedRect = new RECT(0, 0, (int)Math.Round(Window.Width * Window.DpiScale), (int)Math.Round(Window.Height * Window.DpiScale));
-            if (!Window.AllowsTransparency)
+            if (!HasCustomClient)
             {
                 Win32DpiApiResolver.AdjustWindowRectExForDpi(ref updatedRect, style, false, exStyle, actualDpi);
             }
@@ -1373,7 +1394,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             (int)Math.Round(Window.Width * Window.DpiScale),
             (int)Math.Round(Window.Height * Window.DpiScale));
 
-        if (!Window.AllowsTransparency)
+        if (!HasCustomClient)
         {
             Win32DpiApiResolver.AdjustWindowRectExForDpi(ref rect, style, false, exStyle, dpi);
         }
@@ -1528,12 +1549,14 @@ internal sealed class Win32WindowBackend : IWindowBackend
 
         var rgrc = (RECT*)lParam;
 
-        if (_allowsTransparency || _extendTitleBarHeight > 0)
+        if (HasCustomClient)
         {
             // Custom chrome: client == window (no non-client deflate). Keep the original behavior
             // exactly (return 0). WVR_VALIDRECTS is only meaningful for windows that composite
             // through the redirection bitmap; transparent (NOREDIRECTIONBITMAP) windows don't, and
-            // returning it here breaks their sizing.
+            // returning it here breaks their sizing. A borderless window belongs here too: its
+            // WS_THICKFRAME exists only for the system size loop, never as a visible frame, so
+            // DefWindowProc must not deflate the client (mpv's borderless NCCALCSIZE is the model).
             if (!_allowsTransparency && Window.WindowState == Controls.WindowState.Maximized)
             {
                 int frame = User32.GetSystemMetrics(92 /* SM_CXPADDEDBORDER */)
@@ -1664,10 +1687,33 @@ internal sealed class Win32WindowBackend : IWindowBackend
             return WindowStyles.WS_POPUP | WindowStyles.WS_SYSMENU | WindowStyles.WS_THICKFRAME;
         }
 
-        // Borderless or fullscreen: strip the entire native non-client frame.
-        if (Window.Borderless || _isFullScreen)
+        // Fullscreen: strip everything, including the system-menu bits. A fullscreen window
+        // covers the taskbar and must not pick up taskbar-driven minimize/restore (mirrors SDL's
+        // STYLE_FULLSCREEN vs STYLE_BORDERLESS_WINDOWED split).
+        if (_isFullScreen)
         {
             return WindowStyles.WS_POPUP;
+        }
+
+        // Borderless but windowed: keep WS_POPUP so no native caption is drawn, but retain the
+        // system-menu bits that make the shell treat us as a normal top-level window:
+        //   WS_SYSMENU     - the taskbar only routes click minimize/restore to windows with it.
+        //   WS_MINIMIZEBOX - enables SC_MINIMIZE (and the taskbar minimize command).
+        //   WS_THICKFRAME  - enables SC_SIZE. Without it, adding WS_SYSMENU makes DefWindowProc
+        //                    reject WM_NCLBUTTONDOWN(HTLEFT..HTBOTTOMRIGHT): the system size loop
+        //                    consults the system menu, where "Size" is greyed out without this bit.
+        //                    Cursor still changed (we set it in WM_SETCURSOR) but dragging did nothing —
+        //                    exactly the regression seen when WS_SYSMENU was added alone.
+        // mpv's w32_common.c update_style() is the reference: NO_FRAME = OVERLAPPED|MINIMIZEBOX|
+        // THICKFRAME, FULLSCREEN = NO_FRAME & ~THICKFRAME, plus WS_SYSMENU for both.
+        // WS_CAPTION is deliberately NOT set: it would draw a native title bar. WS_MAXIMIZEBOX is
+        // omitted: a borderless Maximized state is visually indistinguishable from our FullScreen.
+        if (Window.Borderless)
+        {
+            uint style = WindowStyles.WS_POPUP | WindowStyles.WS_SYSMENU;
+            if (Window.CanMinimize) style |= WindowStyles.WS_MINIMIZEBOX;
+            if (Window.WindowSize.IsResizable) style |= WindowStyles.WS_THICKFRAME;
+            return style;
         }
 
         {
@@ -2204,7 +2250,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             var minRect = new RECT(0, 0,
                 minW > 0 ? (int)Math.Ceiling(minW * dpiScale) : 0,
                 minH > 0 ? (int)Math.Ceiling(minH * dpiScale) : 0);
-            if (!_allowsTransparency)
+            if (!HasCustomClient)
             {
                 Win32DpiApiResolver.AdjustWindowRectExForDpi(ref minRect, GetWindowStyle(), false, GetWindowExStyle(), dpi);
             }
@@ -2218,7 +2264,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
             var maxRect = new RECT(0, 0,
                 !double.IsPositiveInfinity(maxW) ? (int)Math.Ceiling(maxW * dpiScale) : 0,
                 !double.IsPositiveInfinity(maxH) ? (int)Math.Ceiling(maxH * dpiScale) : 0);
-            if (!_allowsTransparency)
+            if (!HasCustomClient)
             {
                 Win32DpiApiResolver.AdjustWindowRectExForDpi(ref maxRect, GetWindowStyle(), false, GetWindowExStyle(), dpi);
             }
@@ -2276,7 +2322,7 @@ internal sealed class Win32WindowBackend : IWindowBackend
         var target = new RECT(0, 0,
             (int)Math.Round(requested.Width * dpiScale),
             (int)Math.Round(requested.Height * dpiScale));
-        if (!_allowsTransparency && _extendTitleBarHeight <= 0)
+        if (!HasCustomClient)
         {
             Win32DpiApiResolver.AdjustWindowRectExForDpi(
                 ref target, GetWindowStyle(), false, GetWindowExStyle(), dpi);
