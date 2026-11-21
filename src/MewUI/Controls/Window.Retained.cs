@@ -29,7 +29,15 @@ public partial class Window
     /// Draws straight into the window target instead of going through the frame surface, so a test can
     /// compare what the two ways of presenting the same frame put on screen.
     /// </summary>
-    internal static bool PresentWithoutFrameSurface { get; set; }
+    internal static bool PresentWithoutFrameSurface { get; set; } =
+        Environment.GetEnvironmentVariable("VIVY_NO_FRAME_SURFACE") == "1";
+
+    /// <summary>
+    /// Puts the extra frame surface back on opaque windows (<c>VIVY_NO_FRAME_SURFACE=0</c>), for an
+    /// A/B against the default.
+    /// </summary>
+    private static readonly bool ForceFrameSurface =
+        Environment.GetEnvironmentVariable("VIVY_NO_FRAME_SURFACE") == "0";
 
     /// <summary>Counters of what the scene recorded and replayed, for diagnostics and tests.</summary>
     internal RenderSceneStatistics? RetainedStatistics => _renderScene?.Statistics;
@@ -604,6 +612,15 @@ public partial class Window
     /// <summary>How many frames were put on screen through the frame surface, and how many were not because nothing changed.</summary>
     internal (int Presented, int Skipped) PresentCounts => (_presents, _skippedPresents);
 
+    /// <summary>
+    /// Whether the last frame put on screen copied only the areas it changed onto the target, instead of
+    /// the whole frame. A host reading this can tell a partial present from a whole-frame blend.
+    /// </summary>
+    public bool LastFrameCopiedChangedAreasOnly { get; private set; }
+
+    /// <summary>How many layer roots the last frame had to draw over the frame on its way to the screen.</summary>
+    public int LastFrameRootsOverTheFrame => _rootsOverTheFrame.Count;
+
     /// <summary>Tells the window that what it shows is no longer the last frame presented, so the next frame is presented whatever it changed.</summary>
     internal void NotePresentedFrameLost() => _presentedFrameLost = true;
 
@@ -617,7 +634,16 @@ public partial class Window
     {
         // A target that already keeps its contents is repainted in place, and a backend that has not
         // been checked against a surface which keeps them draws straight into the target.
+        //
+        // An opaque window whose target cannot keep its frame gains nothing from the extra surface: every
+        // pass has to draw the whole frame anyway (CanRepaintPartOfTheFrame refuses partial repaints on
+        // such a target), so the surface only adds a full-surface copy and a second replay of live content.
+        // Measured on a player window drawing an external 1080p texture per frame: the video was executed
+        // 1.5x per frame, the present went from 11.9ms to 18.4ms (past one refresh), and the frame rate fell
+        // from 60 to 48 while mpv dropped frames it could otherwise have shown. Transparent windows still
+        // blend onto their own surface, and VIVY_NO_FRAME_SURFACE=0 keeps the old behaviour for a comparison.
         if (PresentWithoutFrameSurface ||
+            (!AllowsTransparency && target is WindowRenderTarget && !ForceFrameSurface) ||
             target is IPersistentFrameSurface ||
             GraphicsFactory is not IPersistentFrameGraphicsFactory { IsPersistentFrameRenderingVerified: true } persistentFactory)
         {
@@ -699,6 +725,7 @@ public partial class Window
 
         _presentedFrameLost = false;
         _presents++;
+        LastFrameCopiedChangedAreasOnly = copiesChangedAreasOnly;
 
         var view = GraphicsFactory.CreateImageView(frameSurface);
         try

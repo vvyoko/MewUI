@@ -238,6 +238,10 @@ public sealed class Win32PlatformHost : IPlatformHost
         {
             if (scheduler.IsContinuous)
             {
+                long passStart = Stopwatch.GetTimestamp();
+                var stats = scheduler.LoopStats;
+                long presentsBefore = stats.Presents;
+
                 try
                 {
                     ProcessMessages();
@@ -248,6 +252,8 @@ public sealed class Win32PlatformHost : IPlatformHost
                 }
                 if (!_running) break;
 
+                long renderedAt = Stopwatch.GetTimestamp();
+
                 try
                 {
                     RenderContinuousWindows(scheduler);
@@ -257,8 +263,17 @@ public sealed class Win32PlatformHost : IPlatformHost
                     if (!HandleLoopException(app, ex)) break;
                 }
 
+                long drawnAt = Stopwatch.GetTimestamp();
+
+                // Did this pass actually present, with the vblank wait on? Then the present already paced
+                // the frame, and waiting on the frame budget on top of it is the second pacer that costs:
+                // Present returns at a vblank, the budget deadline sits a little past the *next* vblank,
+                // so every frame becomes ~1.25 refresh periods. That is a bistable loop (60 -> 48 and it
+                // stays there), and it is why a frame rate measured here disagreed with an overlay.
+                bool pacedByPresent = scheduler.VSyncEnabled && stats.Presents != presentsBefore;
+
                 int fps = scheduler.EffectiveFrameCap(GetDisplayRefreshHz());
-                if (fps > 0)
+                if (fps > 0 && !pacedByPresent)
                 {
                     long frameTicks = ticksPerSecond / fps;
                     WaitForFrameBudget(lastFrameTicks + frameTicks, ticksPerSecond);
@@ -273,12 +288,24 @@ public sealed class Win32PlatformHost : IPlatformHost
                         lastFrameTicks = Stopwatch.GetTimestamp();
                     }
                 }
+                else if (pacedByPresent)
+                {
+                    // Keep the deadline anchored at the present we just did, so turning the wait back on
+                    // (VSync off, or a pass that did not present) does not fire an immediate make-up frame.
+                    lastFrameTicks = Stopwatch.GetTimestamp();
+                }
                 else
                 {
                     // No cap means VSync was turned off, which asks for every frame the machine can
                     // produce. Every window renders on every pass in that mode, so this does not idle.
                     WaitForMessagesOrRender(0, renderOnSignal: false);
                 }
+
+                long passEnd = Stopwatch.GetTimestamp();
+                stats.Frames++;
+                stats.MessagesTicks += renderedAt - passStart;
+                stats.RenderTicks += drawnAt - renderedAt;
+                stats.WaitTicks += passEnd - drawnAt;
             }
             else
             {

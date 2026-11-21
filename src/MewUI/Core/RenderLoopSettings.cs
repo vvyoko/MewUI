@@ -8,8 +8,46 @@ namespace Aprillz.MewUI;
 /// (driven internally by the animation system). The platform host reads <see cref="IsContinuous"/> (the OR of
 /// those, plus VSync off) each frame; nothing sets the loop mode directly.
 /// </remarks>
+/// <summary>
+/// Cumulative pacing counters of the continuous loop: how many frames it completed, and where the
+/// frame time went (all in <see cref="System.Diagnostics.Stopwatch"/> ticks).
+/// </summary>
+/// <remarks>
+/// Cumulative rather than windowed on purpose: the consumer already windows its own log line, and a
+/// second window here would only make the two disagree. Subtract two snapshots to get a span.
+/// <para>
+/// <see cref="Frames"/> is the loop's own count of completed passes, i.e. the number of presentations
+/// it made. It exists because a host-side frame callback can fire on a different cadence than the
+/// loop; this is the number to compare against an external overlay (RTSS and friends count presents).
+/// </para>
+/// </remarks>
+public sealed class RenderLoopStats
+{
+    /// <summary>Completed frame passes.</summary>
+    public long Frames { get; internal set; }
+
+    /// <summary>Time spent in <c>ProcessMessages</c>.</summary>
+    public long MessagesTicks { get; internal set; }
+
+    /// <summary>Time spent rendering windows (layout + draw + present of every window).</summary>
+    public long RenderTicks { get; internal set; }
+
+    /// <summary>Time spent waiting for the next frame budget (or yielding, when uncapped).</summary>
+    public long WaitTicks { get; internal set; }
+
+    /// <summary>Time spent inside <c>EndFrame</c> (flush / submit / composition wait), written by the context.</summary>
+    public long EndFrameTicks { get; internal set; }
+
+    /// <summary>Time spent inside <c>IDXGISwapChain::Present</c>, written by the backend.</summary>
+    public long PresentTicks { get; internal set; }
+
+    /// <summary>Presents counted by <see cref="PresentTicks"/>.</summary>
+    public long Presents { get; internal set; }
+}
+
 public sealed class RenderLoopSettings
 {
+    private readonly RenderLoopStats _loopStats = new();
     private int _continuous;
     private int _targetFps;
     private int _vsyncEnabled = 1;
@@ -48,6 +86,12 @@ public sealed class RenderLoopSettings
         get => Volatile.Read(ref _vsyncEnabled) != 0;
         set => Interlocked.Exchange(ref _vsyncEnabled, value ? 1 : 0);
     }
+
+    /// <summary>
+    /// Cumulative pacing counters of the continuous loop (frames completed, and the split between
+    /// messages / render / wait). Diagnostics only; the platform host writes it every pass.
+    /// </summary>
+    public RenderLoopStats LoopStats => _loopStats;
 
     /// <summary>
     /// Driven by the animation system: true while one or more animation clocks are active. Not a user knob - set the

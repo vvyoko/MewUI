@@ -1088,6 +1088,21 @@ internal sealed class SceneCapture
         RenderDataRecorder recorder,
         bool compatibilitySubtree)
     {
+        if (node.Element.DrawsLive)
+        {
+            // What the visual draws cannot be kept, so every frame that paints it draws it live. Recording
+            // it first would run the visual for pixels that are thrown away - a video surface renders a
+            // frame per visit - and the pass that draws nothing would run it for no pixels at all.
+            update.StageSlot(
+                node,
+                slotIndex,
+                null,
+                VisualNode.DRAWS_LIVE,
+                node.Element.RenderContentVersion,
+                node.Element.SubtreeContentVersion);
+            return;
+        }
+
         if (node.ChangesEveryPass(scene.PassId + 1, scene.Clock()))
         {
             // Nothing replays a recording of content that is different again next frame, so none is taken

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using Aprillz.MewUI.Diagnostics;
 using Aprillz.MewUI.Text;
@@ -579,12 +580,23 @@ internal abstract class GraphicsContextBase : IGraphicsContext, ITextBackendRend
     public void EndFrame()
     {
         if (!IsActive) return;
+
+        // 帧尾这一段（flush / 提交 / 合成等待）是循环自己量不出来的：它发生在一次 EndFrame 里，
+        // 而不是在一次 DrawXxx 里。记进循环读数，宿主日志才能把 16.6ms 归到具体哪一段。
+        var pacing = Application.IsRunning ? Application.Current.RenderLoopSettings.LoopStats : null;
+        long endStart = pacing is null ? 0 : Stopwatch.GetTimestamp();
+
         try
         {
             OnEndFrame();
         }
         finally
         {
+            if (pacing is not null)
+            {
+                pacing.EndFrameTicks += Stopwatch.GetTimestamp() - endStart;
+            }
+
             IsActive = false;
             _cullStack.Clear();
             ReleaseFrameResources();

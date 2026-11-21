@@ -130,6 +130,26 @@ public abstract partial class UIElement : Element
     }
 
     /// <summary>
+    /// Whether what the element draws can never be kept in a recording: a video or 3D surface it
+    /// rewrites every frame.
+    /// </summary>
+    /// <remarks>
+    /// Such a visual is drawn live by every frame that paints it anyway, so the scene does not run it
+    /// through the recorder first: recording would run the visual (and whatever it does while drawing,
+    /// such as decoding a video frame) to find out it cannot be kept, and then draw it live regardless.
+    /// </remarks>
+    public static readonly MewProperty<bool> DrawsLiveProperty =
+        MewProperty<bool>.Register<UIElement>(nameof(DrawsLive), false,
+            MewPropertyOptions.AffectsRender);
+
+    /// <summary>Gets or sets whether the element is drawn live instead of being recorded.</summary>
+    public bool DrawsLive
+    {
+        get => GetValue(DrawsLiveProperty);
+        set => SetValue(DrawsLiveProperty, value);
+    }
+
+    /// <summary>
     /// The cursor shown while the mouse is over this element; null inherits from the parent or the
     /// platform default, and <see cref="CursorType.None"/> hides the cursor.
     /// </summary>

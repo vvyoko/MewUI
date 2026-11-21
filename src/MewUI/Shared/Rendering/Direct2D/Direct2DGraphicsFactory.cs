@@ -1030,12 +1030,14 @@ public sealed unsafe partial class Direct2DGraphicsFactory : IGraphicsFactory, I
                 // STRETCH for both: composition swap-chains reject DXGI_SCALING_NONE
                 // (DXGI_ERROR_INVALID_CALL - flip-hwnd only), and BitBlt needs STRETCH too.
                 scaling: DXGI_SCALING.STRETCH,
-                // Composition (transparent) requires the flip model. Opaque CreateSwapChainForHwnd
-                // windows use the BitBlt model (DISCARD) instead: the flip model composes the
-                // swap-chain directly in DWM, bypassing the redirection bitmap, so live resize shows
-                // a black flash that WM_NCCALCSIZE/WVR_VALIDRECTS cannot fix. BitBlt presents through
-                // the redirection surface, so DWM's resize honors the valid-rects (smooth like GDI).
-                swapEffect: transparentComposition ? DXGI_SWAP_EFFECT.FLIP_SEQUENTIAL : DXGI_SWAP_EFFECT.DISCARD,
+                // Both paths use the flip model. The BitBlt model (DISCARD) was chosen once because flip
+                // composes the swap chain directly in DWM, so live resize can show a black flash that
+                // WM_NCCALCSIZE/WVR_VALIDRECTS cannot fix. It costs far more than that: presenting a window
+                // that draws a per-frame external texture went from 1.8 ms to 14.9 ms per frame (60 fps ->
+                // 53 fps on a 60 Hz screen, measured on a 1850x1040 window), because every present copies the
+                // frame through the redirection surface. Resize smoothness is not worth a permanent frame
+                // time deficit; freeze presenting during the modal move/size loop instead if the flash shows.
+                swapEffect: transparentComposition ? DXGI_SWAP_EFFECT.FLIP_SEQUENTIAL : DXGI_SWAP_EFFECT.FLIP_DISCARD,
                 alphaMode: alphaMode,
                 flags: 0);
 
@@ -1324,7 +1326,16 @@ public sealed unsafe partial class Direct2DGraphicsFactory : IGraphicsFactory, I
             }
 
             uint syncInterval = Application.IsRunning && !Application.Current.RenderLoopSettings.VSyncEnabled ? 0u : 1u;
+            var pacing = Application.IsRunning ? Application.Current.RenderLoopSettings.LoopStats : null;
+            long presentStart = System.Diagnostics.Stopwatch.GetTimestamp();
             int hr = Dxgi.Present(entry.SwapChain, syncInterval, flags: 0);
+            if (pacing is not null)
+            {
+                // 记到循环的读数里（R9-3 不另立一份）：Present 是循环自己量不出来的一段，
+                // 也是 vsync / 队列满时真正卡住的地方。
+                pacing.PresentTicks += System.Diagnostics.Stopwatch.GetTimestamp() - presentStart;
+                pacing.Presents++;
+            }
             return hr;
         }
     }

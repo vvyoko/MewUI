@@ -145,6 +145,9 @@ internal sealed class VisualNode : IDisposable
     /// <summary>Reason given for a slot that is left unrecorded because its visual changes every pass.</summary>
     internal const string CHANGES_EVERY_PASS = "the visual changes every pass";
 
+    /// <summary>Reason given for a slot that is left unrecorded because its visual draws live.</summary>
+    internal const string DRAWS_LIVE = "the visual draws live";
+
     // A recording is worth taking once it gets replayed; a run this long says it will not be.
     private const int CHANGED_PASSES_BEFORE_DRAWN_LIVE = 30;
 
